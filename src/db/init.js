@@ -193,25 +193,25 @@ async function ensureMailboxTombstonesTable(db) {
  * @returns {Promise<void>}
  */
 async function createIndexes(db) {
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_address ON mailboxes(address);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_expires_at ON mailboxes(expires_at);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_is_pinned ON mailboxes(is_pinned DESC);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_address_created ON mailboxes(address, created_at DESC);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_is_favorite ON mailboxes(is_favorite DESC);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_messages_mailbox_id ON messages(mailbox_id);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_messages_received_at ON messages(received_at DESC);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_messages_r2_object_key ON messages(r2_object_key);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received ON messages(mailbox_id, received_at DESC);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received_read ON messages(mailbox_id, received_at DESC, is_read);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user ON user_mailboxes(user_id);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_user_mailboxes_mailbox ON user_mailboxes(mailbox_id);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user_pinned ON user_mailboxes(user_id, is_pinned DESC);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_user_mailboxes_composite ON user_mailboxes(user_id, mailbox_id, is_pinned);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_sent_emails_resend_id ON sent_emails(resend_id);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_sent_emails_status_created ON sent_emails(status, created_at DESC);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_sent_emails_from_addr ON sent_emails(from_addr);');
-  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailbox_tombstones_blocked_until ON mailbox_tombstones(blocked_until);');
+  await createIndexIfColumnsExist(db, 'mailboxes', ['address'], 'CREATE INDEX IF NOT EXISTS idx_mailboxes_address ON mailboxes(address);');
+  await createIndexIfColumnsExist(db, 'mailboxes', ['expires_at'], 'CREATE INDEX IF NOT EXISTS idx_mailboxes_expires_at ON mailboxes(expires_at);');
+  await createIndexIfColumnsExist(db, 'mailboxes', ['is_pinned'], 'CREATE INDEX IF NOT EXISTS idx_mailboxes_is_pinned ON mailboxes(is_pinned DESC);');
+  await createIndexIfColumnsExist(db, 'mailboxes', ['address', 'created_at'], 'CREATE INDEX IF NOT EXISTS idx_mailboxes_address_created ON mailboxes(address, created_at DESC);');
+  await createIndexIfColumnsExist(db, 'mailboxes', ['is_favorite'], 'CREATE INDEX IF NOT EXISTS idx_mailboxes_is_favorite ON mailboxes(is_favorite DESC);');
+  await createIndexIfColumnsExist(db, 'messages', ['mailbox_id'], 'CREATE INDEX IF NOT EXISTS idx_messages_mailbox_id ON messages(mailbox_id);');
+  await createIndexIfColumnsExist(db, 'messages', ['received_at'], 'CREATE INDEX IF NOT EXISTS idx_messages_received_at ON messages(received_at DESC);');
+  await createIndexIfColumnsExist(db, 'messages', ['r2_object_key'], 'CREATE INDEX IF NOT EXISTS idx_messages_r2_object_key ON messages(r2_object_key);');
+  await createIndexIfColumnsExist(db, 'messages', ['mailbox_id', 'received_at'], 'CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received ON messages(mailbox_id, received_at DESC);');
+  await createIndexIfColumnsExist(db, 'messages', ['mailbox_id', 'received_at', 'is_read'], 'CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received_read ON messages(mailbox_id, received_at DESC, is_read);');
+  await createIndexIfColumnsExist(db, 'users', ['username'], 'CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);');
+  await createIndexIfColumnsExist(db, 'user_mailboxes', ['user_id'], 'CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user ON user_mailboxes(user_id);');
+  await createIndexIfColumnsExist(db, 'user_mailboxes', ['mailbox_id'], 'CREATE INDEX IF NOT EXISTS idx_user_mailboxes_mailbox ON user_mailboxes(mailbox_id);');
+  await createIndexIfColumnsExist(db, 'user_mailboxes', ['user_id', 'is_pinned'], 'CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user_pinned ON user_mailboxes(user_id, is_pinned DESC);');
+  await createIndexIfColumnsExist(db, 'user_mailboxes', ['user_id', 'mailbox_id', 'is_pinned'], 'CREATE INDEX IF NOT EXISTS idx_user_mailboxes_composite ON user_mailboxes(user_id, mailbox_id, is_pinned);');
+  await createIndexIfColumnsExist(db, 'sent_emails', ['resend_id'], 'CREATE INDEX IF NOT EXISTS idx_sent_emails_resend_id ON sent_emails(resend_id);');
+  await createIndexIfColumnsExist(db, 'sent_emails', ['status', 'created_at'], 'CREATE INDEX IF NOT EXISTS idx_sent_emails_status_created ON sent_emails(status, created_at DESC);');
+  await createIndexIfColumnsExist(db, 'sent_emails', ['from_addr'], 'CREATE INDEX IF NOT EXISTS idx_sent_emails_from_addr ON sent_emails(from_addr);');
+  await createIndexIfColumnsExist(db, 'mailbox_tombstones', ['blocked_until'], 'CREATE INDEX IF NOT EXISTS idx_mailbox_tombstones_blocked_until ON mailbox_tombstones(blocked_until);');
 }
 
 /**
@@ -221,25 +221,12 @@ async function createIndexes(db) {
  */
 async function migrateMailboxesFields(db, env = {}) {
   try {
-    const columns = await db.prepare('PRAGMA table_info(mailboxes)').all();
-    const columnNames = (columns.results || []).map((column) => column.name);
-
-    if (!columnNames.includes('expires_at')) {
-      await db.exec('ALTER TABLE mailboxes ADD COLUMN expires_at TEXT;');
-      await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_expires_at ON mailboxes(expires_at);');
-      console.log('已补齐 mailboxes.expires_at 字段');
-    }
-
-    if (!columnNames.includes('forward_to')) {
-      await db.exec('ALTER TABLE mailboxes ADD COLUMN forward_to TEXT DEFAULT NULL;');
-      console.log('已补齐 mailboxes.forward_to 字段');
-    }
-
-    if (!columnNames.includes('is_favorite')) {
-      await db.exec('ALTER TABLE mailboxes ADD COLUMN is_favorite INTEGER DEFAULT 0;');
-      await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_is_favorite ON mailboxes(is_favorite DESC);');
-      console.log('已补齐 mailboxes.is_favorite 字段');
-    }
+    await ensureTableColumn(db, 'mailboxes', 'last_accessed_at', 'ALTER TABLE mailboxes ADD COLUMN last_accessed_at TEXT;', '已补齐 mailboxes.last_accessed_at 字段');
+    await ensureTableColumn(db, 'mailboxes', 'expires_at', 'ALTER TABLE mailboxes ADD COLUMN expires_at TEXT;', '已补齐 mailboxes.expires_at 字段');
+    await ensureTableColumn(db, 'mailboxes', 'is_pinned', 'ALTER TABLE mailboxes ADD COLUMN is_pinned INTEGER DEFAULT 0;', '已补齐 mailboxes.is_pinned 字段');
+    await ensureTableColumn(db, 'mailboxes', 'can_login', 'ALTER TABLE mailboxes ADD COLUMN can_login INTEGER DEFAULT 0;', '已补齐 mailboxes.can_login 字段');
+    await ensureTableColumn(db, 'mailboxes', 'forward_to', 'ALTER TABLE mailboxes ADD COLUMN forward_to TEXT DEFAULT NULL;', '已补齐 mailboxes.forward_to 字段');
+    await ensureTableColumn(db, 'mailboxes', 'is_favorite', 'ALTER TABLE mailboxes ADD COLUMN is_favorite INTEGER DEFAULT 0;', '已补齐 mailboxes.is_favorite 字段');
 
     await backfillLegacyMailboxExpiresAt(db, env);
     await ensureMailboxTombstonesTable(db);
@@ -255,24 +242,74 @@ async function migrateMailboxesFields(db, env = {}) {
  */
 async function migrateLegacyTables(db) {
   try {
-    const userMailboxColumns = await db.prepare('PRAGMA table_info(user_mailboxes)').all();
-    const userMailboxColumnNames = (userMailboxColumns.results || []).map((column) => column.name);
+    await ensureTableColumn(db, 'users', 'role', "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user';", '已补齐 users.role 字段');
+    await ensureTableColumn(db, 'users', 'can_send', 'ALTER TABLE users ADD COLUMN can_send INTEGER NOT NULL DEFAULT 0;', '已补齐 users.can_send 字段');
+    await ensureTableColumn(db, 'users', 'mailbox_limit', 'ALTER TABLE users ADD COLUMN mailbox_limit INTEGER NOT NULL DEFAULT 10;', '已补齐 users.mailbox_limit 字段');
 
-    if (!userMailboxColumnNames.includes('is_pinned')) {
-      await db.exec('ALTER TABLE user_mailboxes ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;');
-      console.log('已补齐 user_mailboxes.is_pinned 字段');
-    }
+    await ensureTableColumn(db, 'user_mailboxes', 'created_at', 'ALTER TABLE user_mailboxes ADD COLUMN created_at TEXT;', '已补齐 user_mailboxes.created_at 字段');
+    await ensureTableColumn(db, 'user_mailboxes', 'is_pinned', 'ALTER TABLE user_mailboxes ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;', '已补齐 user_mailboxes.is_pinned 字段');
 
-    const sentEmailColumns = await db.prepare('PRAGMA table_info(sent_emails)').all();
-    const sentEmailColumnNames = (sentEmailColumns.results || []).map((column) => column.name);
-
-    if (!sentEmailColumnNames.includes('from_name')) {
-      await db.exec('ALTER TABLE sent_emails ADD COLUMN from_name TEXT;');
-      console.log('已补齐 sent_emails.from_name 字段');
-    }
+    await ensureTableColumn(db, 'sent_emails', 'from_name', 'ALTER TABLE sent_emails ADD COLUMN from_name TEXT;', '已补齐 sent_emails.from_name 字段');
+    await ensureTableColumn(db, 'sent_emails', 'status', "ALTER TABLE sent_emails ADD COLUMN status TEXT DEFAULT 'queued';", '已补齐 sent_emails.status 字段');
+    await ensureTableColumn(db, 'sent_emails', 'scheduled_at', 'ALTER TABLE sent_emails ADD COLUMN scheduled_at TEXT;', '已补齐 sent_emails.scheduled_at 字段');
+    await ensureTableColumn(db, 'sent_emails', 'created_at', 'ALTER TABLE sent_emails ADD COLUMN created_at TEXT;', '已补齐 sent_emails.created_at 字段');
+    await ensureTableColumn(db, 'sent_emails', 'updated_at', 'ALTER TABLE sent_emails ADD COLUMN updated_at TEXT;', '已补齐 sent_emails.updated_at 字段');
   } catch (error) {
     console.error('旧表结构迁移失败:', error);
   }
+}
+
+/**
+ * 读取指定表的字段集合。
+ * @param {object} db - 数据库连接对象
+ * @param {string} tableName - 表名
+ * @returns {Promise<string[]>}
+ */
+async function getTableColumnNames(db, tableName) {
+  try {
+    const columns = await db.prepare(`PRAGMA table_info(${tableName})`).all();
+    return (columns.results || []).map((column) => column.name);
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * 确保指定表包含某个字段，不存在时自动补齐。
+ * @param {object} db - 数据库连接对象
+ * @param {string} tableName - 表名
+ * @param {string} columnName - 字段名
+ * @param {string} sql - 补字段 SQL
+ * @param {string} successLog - 成功日志
+ * @returns {Promise<void>}
+ */
+async function ensureTableColumn(db, tableName, columnName, sql, successLog) {
+  const columnNames = await getTableColumnNames(db, tableName);
+  if (columnNames.includes(columnName)) {
+    return;
+  }
+
+  await db.exec(sql);
+  if (successLog) {
+    console.log(successLog);
+  }
+}
+
+/**
+ * 仅在索引依赖字段齐全时创建索引，避免旧库升级阶段因缺字段直接失败。
+ * @param {object} db - 数据库连接对象
+ * @param {string} tableName - 表名
+ * @param {string[]} requiredColumns - 依赖字段
+ * @param {string} sql - 建索引 SQL
+ * @returns {Promise<void>}
+ */
+async function createIndexIfColumnsExist(db, tableName, requiredColumns, sql) {
+  const columnNames = await getTableColumnNames(db, tableName);
+  if (!requiredColumns.every((columnName) => columnNames.includes(columnName))) {
+    return;
+  }
+
+  await db.exec(sql);
 }
 
 /**
