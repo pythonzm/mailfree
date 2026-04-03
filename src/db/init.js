@@ -134,6 +134,7 @@ async function performFirstTimeSetup(db, env = {}) {
   }
 
   await migrateMailboxesFields(db, env);
+  await migrateLegacyTables(db);
   await ensureMailboxTombstonesTable(db);
   await createIndexes(db);
 }
@@ -244,6 +245,33 @@ async function migrateMailboxesFields(db, env = {}) {
     await ensureMailboxTombstonesTable(db);
   } catch (error) {
     console.error('mailboxes 字段迁移失败:', error);
+  }
+}
+
+/**
+ * 迁移旧版本其他业务表缺失字段，避免旧库升级时索引或查询失败。
+ * @param {object} db - 数据库连接对象
+ * @returns {Promise<void>}
+ */
+async function migrateLegacyTables(db) {
+  try {
+    const userMailboxColumns = await db.prepare('PRAGMA table_info(user_mailboxes)').all();
+    const userMailboxColumnNames = (userMailboxColumns.results || []).map((column) => column.name);
+
+    if (!userMailboxColumnNames.includes('is_pinned')) {
+      await db.exec('ALTER TABLE user_mailboxes ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;');
+      console.log('已补齐 user_mailboxes.is_pinned 字段');
+    }
+
+    const sentEmailColumns = await db.prepare('PRAGMA table_info(sent_emails)').all();
+    const sentEmailColumnNames = (sentEmailColumns.results || []).map((column) => column.name);
+
+    if (!sentEmailColumnNames.includes('from_name')) {
+      await db.exec('ALTER TABLE sent_emails ADD COLUMN from_name TEXT;');
+      console.log('已补齐 sent_emails.from_name 字段');
+    }
+  } catch (error) {
+    console.error('旧表结构迁移失败:', error);
   }
 }
 

@@ -45,6 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_r2_object_key ON messages(r2_object_key)
 CREATE TABLE IF NOT EXISTS sent_emails (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   resend_id TEXT,
+  from_name TEXT,
   from_addr TEXT NOT NULL,
   to_addrs TEXT NOT NULL,
   subject TEXT NOT NULL,
@@ -88,9 +89,12 @@ CREATE TABLE IF NOT EXISTS user_mailboxes (
   user_id INTEGER NOT NULL,
   mailbox_id INTEGER NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  is_pinned INTEGER NOT NULL DEFAULT 0,
   UNIQUE(user_id, mailbox_id),
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user ON user_mailboxes(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_mailboxes_mailbox ON user_mailboxes(mailbox_id);
+CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user_pinned ON user_mailboxes(user_id, is_pinned DESC);
+CREATE INDEX IF NOT EXISTS idx_user_mailboxes_composite ON user_mailboxes(user_id, mailbox_id, is_pinned);
