@@ -36,6 +36,21 @@ binding = "ASSETS"
 binding = "MAIL_EML"
 bucket_name = "mail-eml"
 
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
+
 # wrangler.toml (wrangler v3.88.0^) 日志服务
 # [observability.logs]
 # enabled = true
