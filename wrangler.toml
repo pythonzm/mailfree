@@ -2,6 +2,7 @@ name = "mailfree"
 # name = "mail-exhibit"
 main = "src/server.js"
 compatibility_date = "2024-01-01"
+keep_vars = true
 
 # D1 数据库绑定
 [[d1_databases]]
@@ -14,6 +15,9 @@ database_id = "dd134a58-25c0-4495-934b-d5be861be889" # 你的database_id
 MAILBOX_EXPIRE_HOURS = "1"
 MAILBOX_TOMBSTONE_HOURS = "24"
 MAILBOX_CLEANUP_BATCH_SIZE = "100"
+# 建议将非敏感配置直接写入这里，例如：
+# MAIL_DOMAIN = "mail.example.com"
+# FORWARD_RULES = '[{"prefix":"vip","email":"a@example.com"}]'
 # FORWARD_RULES="[{"prefix":"vip","email":"a@example.com"},{"prefix":"*","email":"2141083706@qq.com"}]"
 
 [triggers]
