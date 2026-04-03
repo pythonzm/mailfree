@@ -9,6 +9,7 @@ import {
   invalidateSystemStatCache
 } from '../utils/cache.js';
 import { getOrCreateMailboxId, getMailboxIdByAddress } from './mailboxes.js';
+import { nowIso } from '../utils/mailboxLifecycle.js';
 
 /**
  * 创建新用户
@@ -103,13 +104,16 @@ export async function listUsersWithCounts(db, { limit = 50, offset = 0, sort = '
   // 批量查询这些用户的邮箱数量
   const userIds = users.map(u => u.id);
   const placeholders = userIds.map(() => '?').join(',');
+  const currentIso = nowIso();
   const countSql = `
-    SELECT user_id, COUNT(1) AS c 
-    FROM user_mailboxes 
-    WHERE user_id IN (${placeholders})
-    GROUP BY user_id
+    SELECT um.user_id, COUNT(1) AS c 
+    FROM user_mailboxes um
+    JOIN mailboxes m ON m.id = um.mailbox_id
+    WHERE um.user_id IN (${placeholders})
+      AND (m.expires_at IS NULL OR m.expires_at > ?)
+    GROUP BY um.user_id
   `;
-  const { results: counts } = await db.prepare(countSql).bind(...userIds).all();
+  const { results: counts } = await db.prepare(countSql).bind(...userIds, currentIso).all();
   
   // 构建计数映射
   const countMap = new Map();
@@ -134,11 +138,14 @@ export async function listUsersWithCounts(db, { limit = 50, offset = 0, sort = '
  * @returns {Promise<object>} 分配结果对象
  * @throws {Error} 当邮箱地址无效、用户不存在或达到邮箱上限时抛出异常
  */
-export async function assignMailboxToUser(db, { userId = null, username = null, address }) {
+export async function assignMailboxToUser(db, { userId = null, username = null, address, mailboxOptions = {} }) {
   const normalized = String(address || '').trim().toLowerCase();
   if (!normalized) throw new Error('邮箱地址无效');
   // 查询或创建邮箱
-  const mailboxId = await getOrCreateMailboxId(db, normalized);
+  const mailboxId = await getOrCreateMailboxId(db, normalized, {
+    ...mailboxOptions,
+    clearTombstone: true
+  });
 
   // 获取用户 ID
   let uid = userId;
@@ -171,16 +178,18 @@ export async function assignMailboxToUser(db, { userId = null, username = null, 
  * @returns {Promise<Array<object>>} 用户邮箱列表数组，包含地址、创建时间和置顶状态
  */
 export async function getUserMailboxes(db, userId, limit = 100) {
+  const currentIso = nowIso();
   const sql = `
     SELECT m.address, m.created_at, um.is_pinned,
            COALESCE(m.can_login, 0) AS can_login
     FROM user_mailboxes um
     JOIN mailboxes m ON m.id = um.mailbox_id
     WHERE um.user_id = ?
+      AND (m.expires_at IS NULL OR m.expires_at > ?)
     ORDER BY um.is_pinned DESC, datetime(m.created_at) DESC
     LIMIT ?
   `;
-  const { results } = await db.prepare(sql).bind(userId, Math.min(limit, 200)).all();
+  const { results } = await db.prepare(sql).bind(userId, currentIso, Math.min(limit, 200)).all();
   return results || [];
 }
 

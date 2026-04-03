@@ -1,31 +1,119 @@
-/**
+﻿/**
  * 数据库初始化模块
  * @module db/init
  */
 
 import { clearExpiredCache } from '../utils/cache.js';
+import { resolveMailboxExpireHours } from '../utils/mailboxLifecycle.js';
 
-// 初始化状态标志（全局共享，Worker 生命周期内有效）
+const CORE_TABLES = ['mailboxes', 'messages', 'users', 'user_mailboxes', 'sent_emails'];
+
+const MAILBOXES_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS mailboxes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    address TEXT NOT NULL UNIQUE,
+    local_part TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    password_hash TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    last_accessed_at TEXT,
+    expires_at TEXT,
+    is_pinned INTEGER DEFAULT 0,
+    can_login INTEGER DEFAULT 0,
+    forward_to TEXT DEFAULT NULL,
+    is_favorite INTEGER DEFAULT 0
+  );
+`;
+
+const MESSAGES_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mailbox_id INTEGER NOT NULL,
+    sender TEXT NOT NULL,
+    to_addrs TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL,
+    verification_code TEXT,
+    preview TEXT,
+    r2_bucket TEXT NOT NULL DEFAULT 'mail-eml',
+    r2_object_key TEXT NOT NULL DEFAULT '',
+    received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    is_read INTEGER DEFAULT 0,
+    FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id)
+  );
+`;
+
+const USERS_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT,
+    role TEXT NOT NULL DEFAULT 'user',
+    can_send INTEGER NOT NULL DEFAULT 0,
+    mailbox_limit INTEGER NOT NULL DEFAULT 10,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+const USER_MAILBOXES_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS user_mailboxes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    mailbox_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    is_pinned INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(user_id, mailbox_id),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE
+  );
+`;
+
+const SENT_EMAILS_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS sent_emails (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resend_id TEXT,
+    from_name TEXT,
+    from_addr TEXT NOT NULL,
+    to_addrs TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    html_content TEXT,
+    text_content TEXT,
+    status TEXT DEFAULT 'queued',
+    scheduled_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+const MAILBOX_TOMBSTONES_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS mailbox_tombstones (
+    address TEXT PRIMARY KEY,
+    expired_at TEXT NOT NULL,
+    blocked_until TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+// Worker 生命周期内复用的初始化标记
 let _isFirstInit = true;
 
 /**
- * 轻量级数据库初始化（仅在首次启动时检查）
+ * 轻量级数据库初始化。
+ * 仅在 Worker 首次启动时执行结构检查，后续请求只做必要兜底。
  * @param {object} db - 数据库连接对象
- * @returns {Promise<void>} 初始化完成后无返回值
+ * @returns {Promise<void>}
  */
-export async function initDatabase(db) {
+export async function initDatabase(db, env = {}) {
   try {
-    // 清理过期缓存
     clearExpiredCache();
-    
-    // 仅首次启动时执行完整初始化
+    await enableForeignKeys(db);
+
     if (_isFirstInit) {
-      await performFirstTimeSetup(db);
+      await performFirstTimeSetup(db, env);
       _isFirstInit = false;
+      return;
     }
-    
-    // 每次都确保外键约束开启
-    await db.exec(`PRAGMA foreign_keys = ON;`);
+
+    await ensureMailboxTombstonesTable(db);
   } catch (error) {
     console.error('数据库初始化失败:', error);
     throw error;
@@ -33,176 +121,166 @@ export async function initDatabase(db) {
 }
 
 /**
- * 首次启动设置（仅执行一次）
+ * 首次启动时检查表结构并补齐缺失结构。
  * @param {object} db - 数据库连接对象
  * @returns {Promise<void>}
  */
-async function performFirstTimeSetup(db) {
-  // 快速检查：如果所有必要表存在，执行字段迁移后返回
-  try {
-    await db.prepare('SELECT 1 FROM mailboxes LIMIT 1').all();
-    await db.prepare('SELECT 1 FROM messages LIMIT 1').all();
-    await db.prepare('SELECT 1 FROM users LIMIT 1').all();
-    await db.prepare('SELECT 1 FROM user_mailboxes LIMIT 1').all();
-    await db.prepare('SELECT 1 FROM sent_emails LIMIT 1').all();
-    // 所有5个必要表都存在，执行字段迁移
-    await migrateMailboxesFields(db);
-    return;
-  } catch (e) {
-    // 有表不存在，继续初始化
+async function performFirstTimeSetup(db, env = {}) {
+  const hasAllCoreTables = await checkCoreTables(db);
+
+  if (!hasAllCoreTables) {
     console.log('检测到数据库表不完整，开始初始化...');
+    await ensureBaseTables(db);
   }
-  
-  // 创建表结构（仅在表不存在时）- 包含新字段 forward_to 和 is_favorite
-  await db.exec("CREATE TABLE IF NOT EXISTS mailboxes (id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT NOT NULL UNIQUE, local_part TEXT NOT NULL, domain TEXT NOT NULL, password_hash TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, last_accessed_at TEXT, expires_at TEXT, is_pinned INTEGER DEFAULT 0, can_login INTEGER DEFAULT 0, forward_to TEXT DEFAULT NULL, is_favorite INTEGER DEFAULT 0);");
-  await db.exec("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, mailbox_id INTEGER NOT NULL, sender TEXT NOT NULL, to_addrs TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, verification_code TEXT, preview TEXT, r2_bucket TEXT NOT NULL DEFAULT 'mail-eml', r2_object_key TEXT NOT NULL DEFAULT '', received_at TEXT DEFAULT CURRENT_TIMESTAMP, is_read INTEGER DEFAULT 0, FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id));");
-  await db.exec("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_hash TEXT, role TEXT NOT NULL DEFAULT 'user', can_send INTEGER NOT NULL DEFAULT 0, mailbox_limit INTEGER NOT NULL DEFAULT 10, created_at TEXT DEFAULT CURRENT_TIMESTAMP);");
-  await db.exec("CREATE TABLE IF NOT EXISTS user_mailboxes (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, mailbox_id INTEGER NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, is_pinned INTEGER NOT NULL DEFAULT 0, UNIQUE(user_id, mailbox_id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE, FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE);");
-  await db.exec("CREATE TABLE IF NOT EXISTS sent_emails (id INTEGER PRIMARY KEY AUTOINCREMENT, resend_id TEXT, from_name TEXT, from_addr TEXT NOT NULL, to_addrs TEXT NOT NULL, subject TEXT NOT NULL, html_content TEXT, text_content TEXT, status TEXT DEFAULT 'queued', scheduled_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);");
-  
-  // 创建索引
+
+  await migrateMailboxesFields(db, env);
+  await ensureMailboxTombstonesTable(db);
   await createIndexes(db);
 }
 
 /**
- * 创建数据库索引
+ * 检查核心业务表是否都已存在。
  * @param {object} db - 数据库连接对象
+ * @returns {Promise<boolean>}
  */
-async function createIndexes(db) {
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_mailboxes_address ON mailboxes(address);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_mailboxes_is_pinned ON mailboxes(is_pinned DESC);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_mailboxes_address_created ON mailboxes(address, created_at DESC);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_mailboxes_is_favorite ON mailboxes(is_favorite DESC);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_id ON messages(mailbox_id);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_received_at ON messages(received_at DESC);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_r2_object_key ON messages(r2_object_key);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received ON messages(mailbox_id, received_at DESC);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received_read ON messages(mailbox_id, received_at DESC, is_read);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user ON user_mailboxes(user_id);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_user_mailboxes_mailbox ON user_mailboxes(mailbox_id);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user_pinned ON user_mailboxes(user_id, is_pinned DESC);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_user_mailboxes_composite ON user_mailboxes(user_id, mailbox_id, is_pinned);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_sent_emails_resend_id ON sent_emails(resend_id);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_sent_emails_status_created ON sent_emails(status, created_at DESC);`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_sent_emails_from_addr ON sent_emails(from_addr);`);
-}
-
-/**
- * 迁移 mailboxes 表字段（向后兼容）
- * 检查并添加缺失的字段：forward_to, is_favorite
- * @param {object} db - 数据库连接对象
- * @returns {Promise<void>}
- */
-async function migrateMailboxesFields(db) {
+async function checkCoreTables(db) {
   try {
-    const columns = await db.prepare("PRAGMA table_info(mailboxes)").all();
-    const columnNames = (columns.results || []).map(c => c.name);
-    
-    // 添加 forward_to 字段（转发目标）
-    if (!columnNames.includes('forward_to')) {
-      await db.exec("ALTER TABLE mailboxes ADD COLUMN forward_to TEXT DEFAULT NULL;");
-      console.log('已添加 mailboxes.forward_to 字段');
+    for (const tableName of CORE_TABLES) {
+      await db.prepare(`SELECT 1 FROM ${tableName} LIMIT 1`).all();
     }
-    
-    // 添加 is_favorite 字段（收藏状态）
-    if (!columnNames.includes('is_favorite')) {
-      await db.exec("ALTER TABLE mailboxes ADD COLUMN is_favorite INTEGER DEFAULT 0;");
-      await db.exec("CREATE INDEX IF NOT EXISTS idx_mailboxes_is_favorite ON mailboxes(is_favorite DESC);");
-      console.log('已添加 mailboxes.is_favorite 字段');
-    }
-  } catch (error) {
-    console.error('mailboxes 字段迁移失败:', error);
-    // 不抛出异常，允许继续运行
+    return true;
+  } catch (_) {
+    return false;
   }
 }
 
 /**
- * 完整的数据库设置脚本（用于首次部署）
- * 可通过 wrangler d1 execute 或管理面板执行
+ * 打开 SQLite 外键约束。
+ * @param {object} db - 数据库连接对象
+ * @returns {Promise<void>}
+ */
+async function enableForeignKeys(db) {
+  await db.exec('PRAGMA foreign_keys = ON;');
+}
+
+/**
+ * 创建完整业务表结构。
+ * @param {object} db - 数据库连接对象
+ * @returns {Promise<void>}
+ */
+async function ensureBaseTables(db) {
+  await db.exec(MAILBOXES_TABLE_SQL);
+  await db.exec(MESSAGES_TABLE_SQL);
+  await db.exec(USERS_TABLE_SQL);
+  await db.exec(USER_MAILBOXES_TABLE_SQL);
+  await db.exec(SENT_EMAILS_TABLE_SQL);
+  await ensureMailboxTombstonesTable(db);
+}
+
+/**
+ * 创建邮箱墓碑表，用于阻止过期地址被自动复活。
+ * @param {object} db - 数据库连接对象
+ * @returns {Promise<void>}
+ */
+async function ensureMailboxTombstonesTable(db) {
+  await db.exec(MAILBOX_TOMBSTONES_TABLE_SQL);
+}
+
+/**
+ * 创建数据库索引。
+ * @param {object} db - 数据库连接对象
+ * @returns {Promise<void>}
+ */
+async function createIndexes(db) {
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_address ON mailboxes(address);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_expires_at ON mailboxes(expires_at);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_is_pinned ON mailboxes(is_pinned DESC);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_address_created ON mailboxes(address, created_at DESC);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_is_favorite ON mailboxes(is_favorite DESC);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_messages_mailbox_id ON messages(mailbox_id);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_messages_received_at ON messages(received_at DESC);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_messages_r2_object_key ON messages(r2_object_key);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received ON messages(mailbox_id, received_at DESC);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received_read ON messages(mailbox_id, received_at DESC, is_read);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user ON user_mailboxes(user_id);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_user_mailboxes_mailbox ON user_mailboxes(mailbox_id);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user_pinned ON user_mailboxes(user_id, is_pinned DESC);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_user_mailboxes_composite ON user_mailboxes(user_id, mailbox_id, is_pinned);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_sent_emails_resend_id ON sent_emails(resend_id);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_sent_emails_status_created ON sent_emails(status, created_at DESC);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_sent_emails_from_addr ON sent_emails(from_addr);');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_mailbox_tombstones_blocked_until ON mailbox_tombstones(blocked_until);');
+}
+
+/**
+ * 迁移 mailboxes 表缺失字段，并补齐墓碑表。
+ * @param {object} db - 数据库连接对象
+ * @returns {Promise<void>}
+ */
+async function migrateMailboxesFields(db, env = {}) {
+  try {
+    const columns = await db.prepare('PRAGMA table_info(mailboxes)').all();
+    const columnNames = (columns.results || []).map((column) => column.name);
+
+    if (!columnNames.includes('expires_at')) {
+      await db.exec('ALTER TABLE mailboxes ADD COLUMN expires_at TEXT;');
+      await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_expires_at ON mailboxes(expires_at);');
+      console.log('已补齐 mailboxes.expires_at 字段');
+    }
+
+    if (!columnNames.includes('forward_to')) {
+      await db.exec('ALTER TABLE mailboxes ADD COLUMN forward_to TEXT DEFAULT NULL;');
+      console.log('已补齐 mailboxes.forward_to 字段');
+    }
+
+    if (!columnNames.includes('is_favorite')) {
+      await db.exec('ALTER TABLE mailboxes ADD COLUMN is_favorite INTEGER DEFAULT 0;');
+      await db.exec('CREATE INDEX IF NOT EXISTS idx_mailboxes_is_favorite ON mailboxes(is_favorite DESC);');
+      console.log('已补齐 mailboxes.is_favorite 字段');
+    }
+
+    await backfillLegacyMailboxExpiresAt(db, env);
+    await ensureMailboxTombstonesTable(db);
+  } catch (error) {
+    console.error('mailboxes 字段迁移失败:', error);
+  }
+}
+
+/**
+ * 为旧版本遗留邮箱回填过期时间，使其纳入自动清理。
+ * 只处理 expires_at 为空的历史数据，回填基准优先使用最后访问时间。
+ * @param {object} db - 数据库连接对象
+ * @param {object} env - 环境变量对象
+ * @returns {Promise<void>}
+ */
+async function backfillLegacyMailboxExpiresAt(db, env = {}) {
+  const ttlHours = resolveMailboxExpireHours(env);
+  const ttlModifier = `+${ttlHours} hours`;
+
+  const result = await db.prepare(`
+    UPDATE mailboxes
+    SET expires_at = strftime(
+      '%Y-%m-%dT%H:%M:%fZ',
+      COALESCE(last_accessed_at, created_at, CURRENT_TIMESTAMP),
+      ?
+    )
+    WHERE expires_at IS NULL
+  `).bind(ttlModifier).run();
+
+  const changedRows = result?.meta?.changes || 0;
+  if (changedRows > 0) {
+    console.log(`已为 ${changedRows} 个旧邮箱回填 expires_at，旧数据将纳入自动清理`);
+  }
+}
+
+/**
+ * 完整数据库初始化脚本，用于首次部署或人工初始化。
  * @param {object} db - 数据库连接对象
  * @returns {Promise<void>}
  */
 export async function setupDatabase(db) {
-  await db.exec(`PRAGMA foreign_keys = ON;`);
-  
-  // 创建所有表
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS mailboxes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      address TEXT NOT NULL UNIQUE,
-      local_part TEXT NOT NULL,
-      domain TEXT NOT NULL,
-      password_hash TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      last_accessed_at TEXT,
-      expires_at TEXT,
-      is_pinned INTEGER DEFAULT 0,
-      can_login INTEGER DEFAULT 0,
-      forward_to TEXT DEFAULT NULL,
-      is_favorite INTEGER DEFAULT 0
-    );
-  `);
-  
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      mailbox_id INTEGER NOT NULL,
-      sender TEXT NOT NULL,
-      to_addrs TEXT NOT NULL DEFAULT '',
-      subject TEXT NOT NULL,
-      verification_code TEXT,
-      preview TEXT,
-      r2_bucket TEXT NOT NULL DEFAULT 'mail-eml',
-      r2_object_key TEXT NOT NULL DEFAULT '',
-      received_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      is_read INTEGER DEFAULT 0,
-      FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id)
-    );
-  `);
-  
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT NOT NULL UNIQUE,
-      password_hash TEXT,
-      role TEXT NOT NULL DEFAULT 'user',
-      can_send INTEGER NOT NULL DEFAULT 0,
-      mailbox_limit INTEGER NOT NULL DEFAULT 10,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-  
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS user_mailboxes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      mailbox_id INTEGER NOT NULL,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      is_pinned INTEGER NOT NULL DEFAULT 0,
-      UNIQUE(user_id, mailbox_id),
-      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE
-    );
-  `);
-  
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS sent_emails (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      resend_id TEXT,
-      from_name TEXT,
-      from_addr TEXT NOT NULL,
-      to_addrs TEXT NOT NULL,
-      subject TEXT NOT NULL,
-      html_content TEXT,
-      text_content TEXT,
-      status TEXT DEFAULT 'queued',
-      scheduled_at TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-  
-  // 创建所有索引
+  await enableForeignKeys(db);
+  await ensureBaseTables(db);
   await createIndexes(db);
 }

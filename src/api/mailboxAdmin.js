@@ -14,6 +14,7 @@ import {
   handleBatchFavoriteByAddress,
   handleBatchForwardByAddress
 } from './mailboxSettings.js';
+import { deleteR2Objects } from '../utils/r2.js';
 
 /**
  * 处理邮箱管理员相关 API
@@ -45,19 +46,29 @@ export async function handleMailboxAdminApi(request, db, url, path, options) {
         if (!own?.results?.length) return errorResponse('Forbidden', 403);
       }
 
+      const keyRows = await db.prepare(`
+        SELECT r2_object_key
+        FROM messages
+        WHERE mailbox_id = ?
+          AND r2_object_key IS NOT NULL
+          AND r2_object_key != ''
+      `).bind(mailboxId).all();
+      const objectKeys = (keyRows?.results || []).map(row => row.r2_object_key);
+
       try { await db.exec('BEGIN'); } catch (_) { }
       await db.prepare('DELETE FROM messages WHERE mailbox_id = ?').bind(mailboxId).run();
       const deleteResult = await db.prepare('DELETE FROM mailboxes WHERE id = ?').bind(mailboxId).run();
       try { await db.exec('COMMIT'); } catch (_) { }
 
       const deleted = (deleteResult?.meta?.changes || 0) > 0;
+      const r2Result = deleted ? await deleteR2Objects(options.r2, objectKeys) : { deleted: 0 };
 
       if (deleted) {
         invalidateMailboxCache(normalized);
         invalidateSystemStatCache('total_mailboxes');
       }
 
-      return Response.json({ success: deleted, deleted });
+      return Response.json({ success: deleted, deleted, deletedR2Objects: r2Result.deleted });
     } catch (e) {
       try { await db.exec('ROLLBACK'); } catch (_) { }
       return errorResponse('删除失败', 500);

@@ -38,7 +38,7 @@ export async function getInitializedDatabase(env) {
   
   // 缓存数据库初始化，避免每次请求重复执行
   if (!globalThis.__DB_INITED__) {
-    await initDatabase(db);
+    await initDatabase(db, env);
     globalThis.__DB_INITED__ = true;
   }
   

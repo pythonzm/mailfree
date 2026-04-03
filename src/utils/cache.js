@@ -4,6 +4,8 @@
  */
 
 // 缓存过期时间常量（毫秒）
+import { isExpiredAt, nowIso } from './mailboxLifecycle.js';
+
 const CACHE_EXPIRY = {
   MAILBOX_ID: 5 * 60 * 1000,      // 邮箱ID缓存5分钟
   USER_QUOTA: 60 * 1000,           // 用户配额缓存1分钟
@@ -22,6 +24,7 @@ const caches = {
  */
 export function clearExpiredCache() {
   const now = Date.now();
+  const currentIso = nowIso(now);
   for (const cache of Object.values(caches)) {
     for (const [key, entry] of cache.entries()) {
       if (entry.expiry <= now) {
@@ -47,18 +50,28 @@ export async function getCachedMailboxId(db, address) {
   const cached = caches.mailboxId.get(normalized);
   
   if (cached && cached.expiry > now) {
+    if (isExpiredAt(cached.mailboxExpiresAt, currentIso)) {
+      caches.mailboxId.delete(normalized);
+      return null;
+    }
     return cached.id;
   }
   
   // 缓存不存在或过期，查询数据库
-  const res = await db.prepare('SELECT id FROM mailboxes WHERE address = ? LIMIT 1')
+  const res = await db.prepare('SELECT id, expires_at FROM mailboxes WHERE address = ? LIMIT 1')
     .bind(normalized).all();
   
   if (res.results && res.results.length > 0) {
-    const id = res.results[0].id;
+    const row = res.results[0];
+    if (isExpiredAt(row.expires_at, currentIso)) {
+      return null;
+    }
+
+    const id = row.id;
     caches.mailboxId.set(normalized, {
       id,
-      expiry: now + CACHE_EXPIRY.MAILBOX_ID
+      expiry: now + CACHE_EXPIRY.MAILBOX_ID,
+      mailboxExpiresAt: row.expires_at || null
     });
     return id;
   }
@@ -71,13 +84,14 @@ export async function getCachedMailboxId(db, address) {
  * @param {string} address - 邮箱地址
  * @param {number} id - 邮箱ID
  */
-export function updateMailboxIdCache(address, id) {
+export function updateMailboxIdCache(address, id, mailboxExpiresAt = null) {
   const normalized = String(address || '').trim().toLowerCase();
   if (!normalized || !id) return;
   
   caches.mailboxId.set(normalized, {
     id,
-    expiry: Date.now() + CACHE_EXPIRY.MAILBOX_ID
+    expiry: Date.now() + CACHE_EXPIRY.MAILBOX_ID,
+    mailboxExpiresAt: mailboxExpiresAt || null
   });
 }
 
@@ -104,6 +118,7 @@ export async function getCachedUserQuota(db, userId) {
   if (!userId) return { used: 0, limit: 0 };
   
   const now = Date.now();
+  const currentIso = nowIso(now);
   const cached = caches.userQuota.get(userId);
   
   if (cached && cached.expiry > now) {
@@ -115,7 +130,13 @@ export async function getCachedUserQuota(db, userId) {
     const userRes = await db.prepare('SELECT mailbox_limit FROM users WHERE id = ?').bind(userId).all();
     const limit = userRes?.results?.[0]?.mailbox_limit || 10;
     
-    const countRes = await db.prepare('SELECT COUNT(1) AS c FROM user_mailboxes WHERE user_id = ?').bind(userId).all();
+    const countRes = await db.prepare(`
+      SELECT COUNT(1) AS c
+      FROM user_mailboxes um
+      JOIN mailboxes m ON m.id = um.mailbox_id
+      WHERE um.user_id = ?
+        AND (m.expires_at IS NULL OR m.expires_at > ?)
+    `).bind(userId, currentIso).all();
     const used = countRes?.results?.[0]?.c || 0;
     
     caches.userQuota.set(userId, {

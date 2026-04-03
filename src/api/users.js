@@ -191,7 +191,14 @@ export async function handleUsersApi(request, db, url, path, options) {
       const username = String(body.username || '').trim();
       const address = String(body.address || '').trim().toLowerCase();
       if (!username || !address) return errorResponse('参数不完整', 400);
-      const result = await assignMailboxToUser(db, { username, address });
+      const result = await assignMailboxToUser(db, {
+        username,
+        address,
+        mailboxOptions: {
+          ttlMs: options.mailboxTtlMs,
+          expiresAt: options.mailboxExpiresAt
+        }
+      });
       return Response.json(result);
     } catch (e) { return errorResponse('分配失败: ' + (e?.message || e), 500); }
   }

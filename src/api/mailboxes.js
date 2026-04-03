@@ -14,6 +14,7 @@ import {
   assignMailboxToUser
 } from '../db/index.js';
 import { handleMailboxAdminApi } from './mailboxAdmin.js';
+import { createMailboxExpiresAt, nowIso } from '../utils/mailboxLifecycle.js';
 
 /**
  * 处理邮箱管理相关 API
@@ -27,6 +28,9 @@ import { handleMailboxAdminApi } from './mailboxAdmin.js';
  */
 export async function handleMailboxesApi(request, db, mailDomains, url, path, options) {
   const isMock = !!options.mockOnly;
+  const mailboxExpiresAt = options.mailboxExpiresAt || createMailboxExpiresAt(options.mailboxTtlMs);
+  const mailboxExpires = Date.parse(mailboxExpiresAt);
+  const currentIso = nowIso();
 
   // 返回域名列表给前端
   if (path === '/api/domains' && request.method === 'GET') {
@@ -48,16 +52,27 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
       try {
         const payload = getJwtPayload(request, options);
         if (payload?.userId) {
-          await assignMailboxToUser(db, { userId: payload.userId, address: email });
-          return Response.json({ email, expires: Date.now() + 3600000 });
+          await assignMailboxToUser(db, {
+            userId: payload.userId,
+            address: email,
+            mailboxOptions: {
+              ttlMs: options.mailboxTtlMs,
+              expiresAt: mailboxExpiresAt
+            }
+          });
+          return Response.json({ email, expires: mailboxExpires });
         }
-        await getOrCreateMailboxId(db, email);
-        return Response.json({ email, expires: Date.now() + 3600000 });
+        await getOrCreateMailboxId(db, email, {
+          ttlMs: options.mailboxTtlMs,
+          expiresAt: mailboxExpiresAt,
+          clearTombstone: true
+        });
+        return Response.json({ email, expires: mailboxExpires });
       } catch (e) {
         return errorResponse(String(e?.message || '创建失败'), 400);
       }
     }
-    return Response.json({ email, expires: Date.now() + 3600000 });
+    return Response.json({ email, expires: mailboxExpires });
   }
 
   // 自定义创建邮箱
@@ -72,7 +87,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
         const domainIdx = Math.max(0, Math.min(domains.length - 1, Number(body.domainIndex || 0)));
         const chosenDomain = domains[domainIdx] || domains[0];
         const email = `${local}@${chosenDomain}`;
-        return Response.json({ email, expires: Date.now() + 3600000 });
+        return Response.json({ email, expires: mailboxExpires });
       } catch (_) { return errorResponse('Bad Request', 400); }
     }
     
@@ -90,11 +105,22 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
         const payload = getJwtPayload(request, options);
         const userId = payload?.userId;
         if (userId) {
-          await assignMailboxToUser(db, { userId, address: email });
+          await assignMailboxToUser(db, {
+            userId,
+            address: email,
+            mailboxOptions: {
+              ttlMs: options.mailboxTtlMs,
+              expiresAt: mailboxExpiresAt
+            }
+          });
         } else {
-          await getOrCreateMailboxId(db, email);
+          await getOrCreateMailboxId(db, email, {
+            ttlMs: options.mailboxTtlMs,
+            expiresAt: mailboxExpiresAt,
+            clearTombstone: true
+          });
         }
-        return Response.json({ email, expires: Date.now() + 3600000 });
+        return Response.json({ email, expires: mailboxExpires });
       } catch (e) {
         return errorResponse(String(e?.message || '创建失败'), 400);
       }
@@ -118,8 +144,8 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
     
     try {
       const { results } = await db.prepare(
-        'SELECT id, address, is_favorite, forward_to, can_login FROM mailboxes WHERE address = ? LIMIT 1'
-      ).bind(address.toLowerCase()).all();
+        'SELECT id, address, is_favorite, forward_to, can_login FROM mailboxes WHERE address = ? AND (expires_at IS NULL OR expires_at > ?) LIMIT 1'
+      ).bind(address.toLowerCase(), currentIso).all();
       
       if (!results || results.length === 0) {
         return Response.json({
@@ -221,8 +247,9 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
                  forward_to, COALESCE(is_favorite, 0) AS is_favorite
           FROM mailboxes
           WHERE address = ?
+            AND (expires_at IS NULL OR expires_at > ?)
           LIMIT 1
-        `).bind(payload.mailboxAddress).all();
+        `).bind(payload.mailboxAddress, currentIso).all();
         return Response.json({ list: results || [], total: results?.length || 0 });
       } catch (e) {
         return Response.json({ list: [], total: 0 });
@@ -266,7 +293,8 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
       }
 
       const bindParams = [];
-      const whereConditions = [];
+      const whereConditions = ['(m.expires_at IS NULL OR m.expires_at > ?)'];
+      bindParams.push(currentIso);
       
       // 严格管理员可以看到所有邮箱，普通用户只能看到自己关联的邮箱
       const useUserFilter = !strictAdmin && uid;

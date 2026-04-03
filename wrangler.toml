@@ -11,7 +11,13 @@ database_id = "dd134a58-25c0-4495-934b-d5be861be889" # 你的database_id
 # 登录会话过期时间（单位：天，默认7天）
 # 环境变量
 [vars]
+MAILBOX_EXPIRE_HOURS = "1"
+MAILBOX_TOMBSTONE_HOURS = "24"
+MAILBOX_CLEANUP_BATCH_SIZE = "100"
 # FORWARD_RULES="[{"prefix":"vip","email":"a@example.com"},{"prefix":"*","email":"2141083706@qq.com"}]"
+
+[triggers]
+crons = ["0 * * * *"]
 
 
 # 静态资源目录（Workers + Assets）

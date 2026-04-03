@@ -11,7 +11,12 @@ export {
   checkMailboxOwnership,
   toggleMailboxPin,
   getTotalMailboxCount,
-  getForwardTarget
+  getForwardTarget,
+  clearMailboxTombstone,
+  blockMailboxReuse,
+  isMailboxBlocked,
+  touchMailboxActivity,
+  cleanupExpiredMailboxes
 } from './mailboxes.js';
 export {
   createUser,

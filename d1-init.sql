@@ -75,10 +75,18 @@ CREATE TABLE IF NOT EXISTS sent_emails (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS mailbox_tombstones (
+  address TEXT PRIMARY KEY,
+  expired_at TEXT NOT NULL,
+  blocked_until TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 创建索引
 
 -- mailboxes 索引
 CREATE INDEX IF NOT EXISTS idx_mailboxes_address ON mailboxes(address);
+CREATE INDEX IF NOT EXISTS idx_mailboxes_expires_at ON mailboxes(expires_at);
 CREATE INDEX IF NOT EXISTS idx_mailboxes_is_pinned ON mailboxes(is_pinned DESC);
 CREATE INDEX IF NOT EXISTS idx_mailboxes_address_created ON mailboxes(address, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mailboxes_is_favorite ON mailboxes(is_favorite DESC);
@@ -103,4 +111,5 @@ CREATE INDEX IF NOT EXISTS idx_user_mailboxes_composite ON user_mailboxes(user_i
 CREATE INDEX IF NOT EXISTS idx_sent_emails_resend_id ON sent_emails(resend_id);
 CREATE INDEX IF NOT EXISTS idx_sent_emails_status_created ON sent_emails(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sent_emails_from_addr ON sent_emails(from_addr);
+CREATE INDEX IF NOT EXISTS idx_mailbox_tombstones_blocked_until ON mailbox_tombstones(blocked_until);
 

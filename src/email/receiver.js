@@ -6,6 +6,7 @@
 import { extractEmail } from '../utils/common.js';
 import { getOrCreateMailboxId } from '../db/index.js';
 import { parseEmailBody, extractVerificationCode } from './parser.js';
+import { buildMailboxLifecycleOptions } from '../utils/mailboxLifecycle.js';
 
 /**
  * 处理通过 HTTP 接收的邮件
@@ -25,7 +26,15 @@ export async function handleEmailReceive(request, db, env) {
 
     const mailbox = extractEmail(to);
     const sender = extractEmail(from);
-    const mailboxId = await getOrCreateMailboxId(db, mailbox);
+    const mailboxLifecycle = buildMailboxLifecycleOptions(env);
+    const mailboxId = await getOrCreateMailboxId(db, mailbox, {
+      ttlMs: mailboxLifecycle.ttlMs,
+      expiresAt: mailboxLifecycle.expiresAt,
+      allowReviveExpired: false
+    });
+    if (!mailboxId) {
+      return Response.json({ success: true, ignored: true, reason: 'mailbox_expired' });
+    }
 
     // 构造简易 EML 并写入 R2
     const now = new Date();

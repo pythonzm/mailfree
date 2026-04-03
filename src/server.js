@@ -10,13 +10,14 @@
  * @module server
  */
 
-import { initDatabase, getInitializedDatabase } from './db/index.js';
+import { initDatabase, getInitializedDatabase, getOrCreateMailboxId, cleanupExpiredMailboxes } from './db/index.js';
 import { createRouter, authMiddleware } from './routes/index.js';
 import { createAssetManager } from './assets/index.js';
 import { extractEmail } from './utils/common.js';
 import { forwardByLocalPart, forwardByMailboxConfig } from './email/forwarder.js';
 import { parseEmailBody, extractVerificationCode } from './email/parser.js';
 import { getForwardTarget } from './db/mailboxes.js';
+import { buildMailboxLifecycleOptions, createMailboxExpiresAt } from './utils/mailboxLifecycle.js';
 
 export default {
   /**
@@ -156,19 +157,12 @@ export default {
       } catch (_) { }
 
       // 存储到数据库
-      const resMb = await DB.prepare('SELECT id FROM mailboxes WHERE address = ?').bind(mailbox.toLowerCase()).all();
-      let mailboxId;
-      if (Array.isArray(resMb?.results) && resMb.results.length) {
-        mailboxId = resMb.results[0].id;
-      } else {
-        const [localPartMb, domain] = (mailbox || '').toLowerCase().split('@');
-        if (localPartMb && domain) {
-          await DB.prepare('INSERT INTO mailboxes (address, local_part, domain, password_hash, last_accessed_at) VALUES (?, ?, ?, NULL, CURRENT_TIMESTAMP)')
-            .bind((mailbox || '').toLowerCase(), localPartMb, domain).run();
-          const created = await DB.prepare('SELECT id FROM mailboxes WHERE address = ?').bind((mailbox || '').toLowerCase()).all();
-          mailboxId = created?.results?.[0]?.id;
-        }
-      }
+      const mailboxLifecycle = buildMailboxLifecycleOptions(env);
+      const mailboxId = await getOrCreateMailboxId(DB, mailbox, {
+        ttlMs: mailboxLifecycle.ttlMs,
+        expiresAt: mailboxLifecycle.expiresAt,
+        allowReviveExpired: false
+      });
       if (!mailboxId) throw new Error('无法解析或创建 mailbox 记录');
 
       // 解析收件人列表
@@ -202,6 +196,32 @@ export default {
       ).run();
     } catch (err) {
       console.error('Email event handling error:', err);
+    }
+  },
+
+  async scheduled(controller, env, ctx) {
+    let DB;
+    try {
+      DB = await getInitializedDatabase(env);
+    } catch (error) {
+      console.error('定时清理时数据库连接失败:', error.message);
+      return;
+    }
+
+    try {
+      const mailboxLifecycle = buildMailboxLifecycleOptions(env);
+      const cleanupResult = await cleanupExpiredMailboxes(DB, {
+        r2: env.MAIL_EML,
+        currentTimeIso: mailboxLifecycle.nowIso,
+        tombstoneBlockedUntil: createMailboxExpiresAt(mailboxLifecycle.tombstoneMs),
+        batchSize: mailboxLifecycle.cleanupBatchSize
+      });
+      console.log('定时清理完成:', {
+        cron: controller?.cron || '',
+        ...cleanupResult
+      });
+    } catch (error) {
+      console.error('定时清理失败:', error);
     }
   }
 };

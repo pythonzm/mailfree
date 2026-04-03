@@ -8,6 +8,7 @@ import { buildMockEmails, buildMockEmailDetail } from './mock.js';
 import { extractEmail } from '../utils/common.js';
 import { getMailboxIdByAddress } from '../db/index.js';
 import { parseEmailBody } from '../email/parser.js';
+import { deleteR2Objects } from '../utils/r2.js';
 
 /**
  * 处理邮件相关 API
@@ -30,6 +31,7 @@ export async function handleEmailsApi(request, db, url, path, options) {
       return errorResponse('缺少 mailbox 参数', 400);
     }
     try {
+      const existing = await db.prepare(`SELECT r2_object_key FROM messages WHERE id = ? LIMIT 1`).bind(emailId).first();
       if (isMock) {
         return Response.json(buildMockEmails(6));
       }
@@ -134,12 +136,23 @@ export async function handleEmailsApi(request, db, url, path, options) {
         return Response.json({ success: true, deletedCount: 0 });
       }
       
+      const keyRows = await db.prepare(`
+        SELECT r2_object_key
+        FROM messages
+        WHERE mailbox_id = ?
+          AND r2_object_key IS NOT NULL
+          AND r2_object_key != ''
+      `).bind(mailboxId).all();
+      const objectKeys = (keyRows?.results || []).map(row => row.r2_object_key);
+      
       const result = await db.prepare(`DELETE FROM messages WHERE mailbox_id = ?`).bind(mailboxId).run();
       const deletedCount = result?.meta?.changes || 0;
+      const r2Result = await deleteR2Objects(r2, objectKeys);
       
       return Response.json({
         success: true,
-        deletedCount
+        deletedCount,
+        deletedR2Objects: r2Result.deleted
       });
     } catch (e) {
       console.error('清空邮件失败:', e);
@@ -242,12 +255,15 @@ export async function handleEmailsApi(request, db, url, path, options) {
     }
     
     try {
+      const existing = await db.prepare(`SELECT r2_object_key FROM messages WHERE id = ? LIMIT 1`).bind(emailId).first();
       const result = await db.prepare(`DELETE FROM messages WHERE id = ?`).bind(emailId).run();
       const deleted = (result?.meta?.changes || 0) > 0;
+      const r2Result = deleted ? await deleteR2Objects(r2, [existing?.r2_object_key]) : { deleted: 0 };
       
       return Response.json({
         success: true,
         deleted,
+        deletedR2Objects: r2Result.deleted,
         message: deleted ? '邮件已删除' : '邮件不存在或已被删除'
       });
     } catch (e) {

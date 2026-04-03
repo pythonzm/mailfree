@@ -8,6 +8,7 @@ import { handleApiRequest } from '../api/index.js';
 import { getDatabaseWithValidation } from '../db/index.js';
 import { verifyPassword } from '../utils/common.js';
 import { handleEmailReceive } from '../email/receiver.js';
+import { buildMailboxLifecycleOptions } from '../utils/mailboxLifecycle.js';
 
 /**
  * 创建并配置路由器
@@ -32,6 +33,7 @@ export function createRouter() {
     const JWT_TOKEN = env.JWT_TOKEN || env.JWT_SECRET || '';
     // 从环境变量读取会话过期天数，默认7天
     const SESSION_EXPIRE_DAYS = parseInt(env.SESSION_EXPIRE_DAYS, 10) || 7;
+    const mailboxLifecycle = buildMailboxLifecycleOptions(env);
 
     try {
       const body = await request.json();
@@ -96,7 +98,7 @@ export function createRouter() {
       try {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (emailRegex.test(name)) {
-          const mailboxInfo = await verifyMailboxLogin(name, password, DB);
+          const mailboxInfo = await verifyMailboxLogin(name, password, DB, mailboxLifecycle);
           if (mailboxInfo) {
             const token = await createJwt(JWT_TOKEN, {
               role: 'mailbox',
@@ -235,6 +237,7 @@ async function delegateApiRequest(context) {
 
   const RESEND_API_KEY = env.RESEND_API_KEY || env.RESEND_TOKEN || env.RESEND || '';
   const ADMIN_NAME = String(env.ADMIN_NAME || 'admin').trim().toLowerCase();
+  const mailboxLifecycle = buildMailboxLifecycleOptions(env);
 
   // 访客只允许读取模拟数据
   if ((authPayload.role || 'admin') === 'guest') {
@@ -243,7 +246,9 @@ async function delegateApiRequest(context) {
       resendApiKey: RESEND_API_KEY,
       adminName: ADMIN_NAME,
       r2: env.MAIL_EML,
-      authPayload
+      authPayload,
+      mailboxTtlMs: mailboxLifecycle.ttlMs,
+      mailboxExpiresAt: mailboxLifecycle.expiresAt
     });
   }
 
@@ -255,7 +260,9 @@ async function delegateApiRequest(context) {
       adminName: ADMIN_NAME,
       r2: env.MAIL_EML,
       authPayload,
-      mailboxOnly: true
+      mailboxOnly: true,
+      mailboxTtlMs: mailboxLifecycle.ttlMs,
+      mailboxExpiresAt: mailboxLifecycle.expiresAt
     });
   }
 
@@ -264,7 +271,9 @@ async function delegateApiRequest(context) {
     resendApiKey: RESEND_API_KEY,
     adminName: ADMIN_NAME,
     r2: env.MAIL_EML,
-    authPayload
+    authPayload,
+    mailboxTtlMs: mailboxLifecycle.ttlMs,
+    mailboxExpiresAt: mailboxLifecycle.expiresAt
   });
 }
 

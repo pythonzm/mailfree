@@ -3,6 +3,8 @@
  * @module middleware/auth
  */
 
+import { createMailboxExpiresAt, nowIso } from '../utils/mailboxLifecycle.js';
+
 export const COOKIE_NAME = 'iding-session';
 
 // 默认会话过期时间（天）
@@ -101,14 +103,18 @@ export function buildSessionCookie(token, reqUrl = '', expireDays = DEFAULT_SESS
  * @param {object} DB - 数据库连接对象
  * @returns {Promise<object|false>} 验证成功返回邮箱信息，失败返回false
  */
-export async function verifyMailboxLogin(emailAddress, password, DB) {
+export async function verifyMailboxLogin(emailAddress, password, DB, options = {}) {
   if (!emailAddress || !password) return false;
 
   try {
     const email = emailAddress.toLowerCase().trim();
 
-    const result = await DB.prepare('SELECT id, address, local_part, domain, password_hash, can_login FROM mailboxes WHERE address = ?')
-      .bind(email).all();
+    const result = await DB.prepare(`
+      SELECT id, address, local_part, domain, password_hash, can_login, expires_at
+      FROM mailboxes
+      WHERE address = ?
+        AND (expires_at IS NULL OR expires_at > ?)
+    `).bind(email, nowIso()).all();
 
     if (result?.results?.length > 0) {
       const mailbox = result.results[0];
@@ -129,8 +135,9 @@ export async function verifyMailboxLogin(emailAddress, password, DB) {
         return false;
       }
 
-      await DB.prepare('UPDATE mailboxes SET last_accessed_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .bind(mailbox.id).run();
+      const nextExpiresAt = options.expiresAt || createMailboxExpiresAt(options.ttlMs);
+      await DB.prepare('UPDATE mailboxes SET last_accessed_at = CURRENT_TIMESTAMP, expires_at = ? WHERE id = ?')
+        .bind(nextExpiresAt, mailbox.id).run();
 
       return {
         id: mailbox.id,

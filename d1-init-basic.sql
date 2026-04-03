@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS mailboxes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_mailboxes_address ON mailboxes(address);
+CREATE INDEX IF NOT EXISTS idx_mailboxes_expires_at ON mailboxes(expires_at);
 CREATE INDEX IF NOT EXISTS idx_mailboxes_is_pinned ON mailboxes(is_pinned DESC);
 CREATE INDEX IF NOT EXISTS idx_mailboxes_is_favorite ON mailboxes(is_favorite DESC);
 
@@ -60,6 +61,14 @@ CREATE TABLE IF NOT EXISTS sent_emails (
 );
 CREATE INDEX IF NOT EXISTS idx_sent_emails_resend_id ON sent_emails(resend_id);
 CREATE INDEX IF NOT EXISTS idx_sent_emails_r2_object_key ON sent_emails(r2_object_key);
+
+CREATE TABLE IF NOT EXISTS mailbox_tombstones (
+  address TEXT PRIMARY KEY,
+  expired_at TEXT NOT NULL,
+  blocked_until TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mailbox_tombstones_blocked_until ON mailbox_tombstones(blocked_until);
 
 
 -- 用户与授权表
