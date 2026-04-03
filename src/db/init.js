@@ -84,14 +84,7 @@ const SENT_EMAILS_TABLE_SQL = `
   );
 `;
 
-const MAILBOX_TOMBSTONES_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS mailbox_tombstones (
-    address TEXT PRIMARY KEY,
-    expired_at TEXT NOT NULL,
-    blocked_until TEXT NOT NULL,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-  );
-`;
+const MAILBOX_TOMBSTONES_TABLE_SQL = 'CREATE TABLE IF NOT EXISTS mailbox_tombstones (address TEXT PRIMARY KEY, expired_at TEXT NOT NULL, blocked_until TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);';
 
 // Worker 生命周期内复用的初始化标记
 let _isFirstInit = true;
