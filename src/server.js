@@ -124,6 +124,21 @@ export default {
 
       const mailbox = extractEmail(resolvedRecipient || toHeader);
       const sender = extractEmail(fromHeader);
+      if (!mailbox) {
+        console.warn('忽略无法解析收件地址的来信:', { resolvedRecipient, toHeader });
+        return;
+      }
+
+      const mailboxLifecycle = buildMailboxLifecycleOptions(env);
+      const mailboxId = await getOrCreateMailboxId(DB, mailbox, {
+        ttlMs: mailboxLifecycle.ttlMs,
+        expiresAt: mailboxLifecycle.expiresAt,
+        allowReviveExpired: false
+      });
+      if (!mailboxId) {
+        console.warn('忽略已过期或被阻止复用的邮箱来信:', { mailbox });
+        return;
+      }
 
       // 存储到 R2
       const r2 = env.MAIL_EML;
@@ -157,14 +172,6 @@ export default {
       } catch (_) { }
 
       // 存储到数据库
-      const mailboxLifecycle = buildMailboxLifecycleOptions(env);
-      const mailboxId = await getOrCreateMailboxId(DB, mailbox, {
-        ttlMs: mailboxLifecycle.ttlMs,
-        expiresAt: mailboxLifecycle.expiresAt,
-        allowReviveExpired: false
-      });
-      if (!mailboxId) throw new Error('无法解析或创建 mailbox 记录');
-
       // 解析收件人列表
       let toAddrs = '';
       try {
