@@ -31,7 +31,6 @@ export async function handleEmailsApi(request, db, url, path, options) {
       return errorResponse('缺少 mailbox 参数', 400);
     }
     try {
-      const existing = await db.prepare(`SELECT r2_object_key FROM messages WHERE id = ? LIMIT 1`).bind(emailId).first();
       if (isMock) {
         return Response.json(buildMockEmails(6));
       }
