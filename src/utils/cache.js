@@ -47,6 +47,7 @@ export async function getCachedMailboxId(db, address) {
   if (!normalized) return null;
   
   const now = Date.now();
+  const currentIso = nowIso(now);
   const cached = caches.mailboxId.get(normalized);
   
   if (cached && cached.expiry > now) {
